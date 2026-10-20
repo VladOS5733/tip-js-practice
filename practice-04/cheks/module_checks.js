@@ -1,4 +1,3 @@
-// Проверки новых модулей ПР4. Установка пакетов не требуется.
 import assert from "node:assert/strict";
 import { updateTask } from "../src/task-service.js";
 import { validateTaskDraft } from "../src/form-validation.js";
