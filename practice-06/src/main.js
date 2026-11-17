@@ -26,5 +26,9 @@ view.connect({
   },
 });
 
-controller.start(variantFilters);
+// Применяем фильтры варианта ТОЛЬКО если в ссылке есть ?dataset=variant
+const isVariant = urlParams.get("dataset") === "variant";
+const initialFilters = isVariant ? variantFilters : {};
+
+controller.start(initialFilters);
 window.practice06 = { ready: controller.ready };

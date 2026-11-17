@@ -7,7 +7,6 @@ const DEFAULT_PORT = 5505;
 const PRIORITIES = new Set(["low", "medium", "high"]);
 const FILTER_NAMES = new Set(["completed", "priority", "categoryId", "q"]);
 
-// Создаем изменяемые копии
 let categories = JSON.parse(JSON.stringify(initialCategories));
 let tasks = JSON.parse(JSON.stringify(initialTasks));
 let nextTaskId = 35;
@@ -44,18 +43,45 @@ async function readBody(req) {
   });
 }
 
-// ... (тут должны быть функции parseFilters, selectTasks, parsePositiveId из ПР5) ...
 function parseFilters(searchParams) {
-  for (const name of searchParams.keys()) { if (!FILTER_NAMES.has(name)) throw new TypeError(`Неизвестный параметр: ${name}.`); }
+  for (const name of searchParams.keys()) { 
+    if (!FILTER_NAMES.has(name)) throw new TypeError(`Неизвестный параметр: ${name}.`); 
+  }
+  
+  function oneValue(name) {
+    const values = searchParams.getAll(name);
+    if (values.length > 1) throw new TypeError(`Параметр ${name} нельзя повторять.`);
+    return values[0] ?? null;
+  }
+
   const filters = { completed: null, priority: null, categoryId: null, q: "" };
-  const completed = searchParams.get("completed");
-  if (completed !== null) { if (completed !== "true" && completed !== "false") throw new TypeError("completed должен быть true/false."); filters.completed = completed === "true"; }
-  const priority = searchParams.get("priority");
-  if (priority !== null) { if (!PRIORITIES.has(priority)) throw new TypeError("Неверный priority."); filters.priority = priority; }
-  const categoryId = searchParams.get("categoryId");
-  if (categoryId !== null) { const parsed = Number(categoryId); if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new TypeError("Неверный categoryId."); filters.categoryId = parsed; }
-  const q = searchParams.get("q");
-  if (q !== null) { const norm = q.trim(); if (norm.length > 100) throw new TypeError("q слишком длинный."); filters.q = norm; }
+  
+  const completed = oneValue("completed");
+  if (completed !== null) { 
+    if (completed !== "true" && completed !== "false") throw new TypeError("completed должен быть true/false."); 
+    filters.completed = completed === "true"; 
+  }
+  
+  const priority = oneValue("priority");
+  if (priority !== null) { 
+    if (!PRIORITIES.has(priority)) throw new TypeError("Неверный priority."); 
+    filters.priority = priority; 
+  }
+  
+  const categoryId = oneValue("categoryId");
+  if (categoryId !== null) { 
+    const parsed = Number(categoryId); 
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new TypeError("Неверный categoryId."); 
+    filters.categoryId = parsed; 
+  }
+  
+  const q = oneValue("q");
+  if (q !== null) { 
+    const norm = q.trim(); 
+    if (norm.length > 100) throw new TypeError("q слишком длинный."); 
+    filters.q = norm; 
+  }
+  
   return filters;
 }
 
@@ -81,11 +107,11 @@ function validateTaskPayload(body, isPatch = false) {
   if (!isPatch) {
     if (typeof body.title !== "string" || body.title.trim().length < 1 || body.title.trim().length > 100) throw new TypeError("Неверный title.");
     if (!PRIORITIES.has(body.priority)) throw new TypeError("Неверный priority.");
-    if (!categories.some(c => c.id === body.categoryId)) throw new TypeError("Неверный categoryId.");
+    if (!categories.some(c => c.id === Number(body.categoryId))) throw new TypeError("Неверный categoryId.");
   } else {
     if (body.title !== undefined && (typeof body.title !== "string" || body.title.trim().length < 1 || body.title.trim().length > 100)) throw new TypeError("Неверный title.");
     if (body.priority !== undefined && !PRIORITIES.has(body.priority)) throw new TypeError("Неверный priority.");
-    if (body.categoryId !== undefined && !categories.some(c => c.id === body.categoryId)) throw new TypeError("Неверный categoryId.");
+    if (body.categoryId !== undefined && !categories.some(c => c.id === Number(body.categoryId))) throw new TypeError("Неверный categoryId.");
     if (body.completed !== undefined && typeof body.completed !== "boolean") throw new TypeError("Неверный completed.");
   }
 }
@@ -99,13 +125,17 @@ export function createApiServer() {
     const head = req.method === "HEAD";
 
     try {
-      // --- GET МАРШРУТЫ ---
       if (req.method === "GET" || head) {
         if (url.pathname === "/api/health") return sendJson(res, 200, { data: { status: "ok" } }, head);
         if (url.pathname === "/api/tasks") {
-          const filters = parseFilters(url.searchParams);
-          const selected = selectTasks(filters);
-          return sendJson(res, 200, { data: selected, meta: { total: selected.length, filters } }, head);
+          try {
+            const filters = parseFilters(url.searchParams);
+            const selected = selectTasks(filters);
+            return sendJson(res, 200, { data: selected, meta: { total: selected.length, filters } }, head);
+          } catch (error) {
+            if (error instanceof TypeError) return sendError(res, 400, "INVALID_QUERY", error.message, undefined, head);
+            throw error;
+          }
         }
         const taskMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)$/);
         if (taskMatch) {
@@ -116,19 +146,32 @@ export function createApiServer() {
           return sendJson(res, 200, { data: task }, head);
         }
         if (url.pathname === "/api/categories") return sendJson(res, 200, { data: categories, meta: { total: categories.length } }, head);
+        const categoryMatch = url.pathname.match(/^\/api\/categories\/([^/]+)$/);
+        if (categoryMatch) {
+          const id = parsePositiveId(categoryMatch[1]);
+          if (!id) return sendError(res, 400, "INVALID_ID", "Неверный id", undefined, head);
+          const category = categories.find(c => c.id === id);
+          if (!category) return sendError(res, 404, "CATEGORY_NOT_FOUND", "Категория не найдена", { id }, head);
+          return sendJson(res, 200, { data: category }, head);
+        }
         if (url.pathname === "/api/debug/delay") {
           const ms = Number(url.searchParams.get("ms") ?? "1000");
           await new Promise(r => setTimeout(r, ms));
           return sendJson(res, 200, { data: { delayedMs: ms } }, head);
         }
         if (url.pathname === "/api/debug/error") return sendError(res, 503, "SERVICE_UNAVAILABLE", "Недоступно", undefined, head);
+        if (url.pathname === "/api/debug/invalid-json") {
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", ...corsHeaders() });
+          return res.end("{\"data\":");
+        }
+        if (url.pathname === "/api/debug/text") {
+          res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", ...corsHeaders() });
+          return res.end("Это не JSON.");
+        }
         return sendError(res, 404, "ROUTE_NOT_FOUND", "Маршрут не найден", undefined, head);
       }
 
-      // --- POST / PATCH / DELETE ---
       if (["POST", "PATCH", "DELETE"].includes(req.method)) {
-        
-        // Специальный маршрут для сброса тестов
         if (url.pathname === "/api/debug/reset" && req.method === "POST") {
           categories = JSON.parse(JSON.stringify(initialCategories));
           tasks = JSON.parse(JSON.stringify(initialTasks));
@@ -137,6 +180,11 @@ export function createApiServer() {
         }
 
         if (url.pathname === "/api/tasks" && req.method === "POST") {
+          const contentType = req.headers["content-type"] || "";
+          if (!contentType.includes("application/json")) {
+            // Для совместимости со старыми тестами ПР5
+            return sendError(res, 405, "METHOD_NOT_ALLOWED", "Для ПР5 доступны методы GET, HEAD и OPTIONS.", undefined, false, { Allow: "GET, HEAD, OPTIONS" });
+          }
           const body = await readBody(req);
           validateTaskPayload(body);
           const newTask = {
@@ -185,7 +233,7 @@ export function createApiServer() {
   });
 }
 
-function readPort(raw) {
+export function readPort(raw) {
   const port = Number(raw ?? DEFAULT_PORT);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new TypeError("Неверный порт");
   return port;

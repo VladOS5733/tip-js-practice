@@ -12,8 +12,13 @@ export function messageForError(error) {
 }
 
 export function createAppController({ api, view, validateDraft = validateTaskDraft } = {}) {
-  if (!api || !view) throw new TypeError("api и view обязательны.");
-  
+  if (!api || typeof api.getTasks !== "function" || typeof api.loadInitialData !== "function") {
+    throw new TypeError("api обязателен и должен содержать методы.");
+  }
+  if (!view || typeof view.setListState !== "function" || typeof view.setTasks !== "function") {
+    throw new TypeError("view обязателен и должен содержать методы.");
+  }
+
   let tasks = [];
   let categories = [];
   let filters = {};
@@ -22,10 +27,11 @@ export function createAppController({ api, view, validateDraft = validateTaskDra
   let readyResolve;
   const ready = new Promise((resolve) => { readyResolve = resolve; });
 
-  async function fetchList(isInitial = false) {
+    async function fetchList(isInitial = false) {
     if (abortController) abortController.abort();
     abortController = new AbortController();
     const { signal } = abortController;
+    const currentRequest = abortController; // Запоминаем текущий контроллер
 
     view.setListState("loading");
 
@@ -39,12 +45,15 @@ export function createAppController({ api, view, validateDraft = validateTaskDra
         result = await api.getTasks(filters, { signal });
       }
       
+      // Если этот запрос был отменен, пока мы ждали ответ, игнорируем его!
+      if (currentRequest.signal.aborted) return;
+
       tasks = result.tasks;
       view.setTasks(tasks, categories);
       view.setTotal(result.meta.total);
       view.setListState(tasks.length === 0 ? "empty" : "ready");
     } catch (error) {
-      if (error.kind === "aborted") return;
+      if (error.kind === "aborted" || currentRequest.signal.aborted) return;
       view.setListState("error", messageForError(error));
     }
   }
@@ -66,7 +75,6 @@ export function createAppController({ api, view, validateDraft = validateTaskDra
     ready,
     async start(initialFilters = {}) {
       filters = { ...initialFilters };
-      view.setFilters(filters);
       await fetchList(true);
       readyResolve();
     },

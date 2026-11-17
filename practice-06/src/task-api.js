@@ -33,7 +33,33 @@ export function createTaskApi(client) {
   }
 
   async function getTasks(filters = {}, { signal } = {}) {
-    const payload = await client.requestJson("/tasks", { query: filters, signal });
+    if (filters === null || typeof filters !== "object" || Array.isArray(filters)) {
+      throw new TypeError("filters должен быть объектом.");
+    }
+    const query = {};
+    for (const key of Object.keys(filters)) {
+      if (!ALLOWED_FILTERS.has(key)) throw new TypeError(`Неизвестный фильтр: ${key}.`);
+    }
+    if (filters.completed !== undefined) {
+      if (typeof filters.completed !== "boolean") throw new TypeError("completed должен быть boolean.");
+      query.completed = filters.completed;
+    }
+    if (filters.priority !== undefined) {
+      if (!ALLOWED_PRIORITIES.has(filters.priority)) throw new TypeError("Неверный priority.");
+      query.priority = filters.priority;
+    }
+    if (filters.categoryId !== undefined) {
+      if (!isPositiveSafeInteger(filters.categoryId)) throw new TypeError("Неверный categoryId.");
+      query.categoryId = filters.categoryId;
+    }
+    if (filters.q !== undefined) {
+      if (typeof filters.q !== "string") throw new TypeError("q должен быть строкой.");
+      const trimmed = filters.q.trim();
+      if (trimmed.length > 100) throw new TypeError("q слишком длинный.");
+      query.q = trimmed;
+    }
+
+    const payload = await client.requestJson("/tasks", { query, signal });
     if (!Array.isArray(payload.data) || typeof payload.meta?.total !== "number") throw invalidResponse("Неверный формат.");
     const seen = new Set();
     for (const t of payload.data) {
