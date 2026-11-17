@@ -11,23 +11,119 @@ export function messageForError(error) {
   return "Не удалось выполнить операцию.";
 }
 
-// view — адаптер из dom-app.js. Контроллер не должен обращаться к document.
-// Обязательные методы результата:
-// start, applyFilters, refresh, submit, beginEdit, cancelEdit,
-// toggleTask, deleteTask, resetData и destroy.
 export function createAppController({ api, view, validateDraft = validateTaskDraft } = {}) {
-  void api;
-  void view;
-  void validateDraft;
-  void ApiError;
+  if (!api || !view) throw new TypeError("api и view обязательны.");
+  
+  let tasks = [];
+  let categories = [];
+  let filters = {};
+  let editingId = null;
+  let abortController = null;
+  let readyResolve;
+  const ready = new Promise((resolve) => { readyResolve = resolve; });
 
-  // TODO:
-  // 1. Хранить текущие tasks, categories, filters и editingId.
-  // 2. При загрузке показывать loading, затем ready/empty или error.
-  // 3. Перед новой загрузкой отменять предыдущую через AbortController.
-  // 4. Не позволять устаревшему ответу изменить интерфейс.
-  // 5. После успешной мутации повторно запросить список с текущими фильтрами.
-  // 6. Ошибку отменённого запроса не показывать пользователю.
-  // 7. Если категории ещё не были получены, retry снова выполняет начальную загрузку.
-  throw new Error("Не реализовано: createAppController");
+  async function fetchList(isInitial = false) {
+    if (abortController) abortController.abort();
+    abortController = new AbortController();
+    const { signal } = abortController;
+
+    view.setListState("loading");
+
+    try {
+      let result;
+      if (isInitial || categories.length === 0) {
+        result = await api.loadInitialData(filters, { signal });
+        categories = result.categories;
+        view.setCategories(categories);
+      } else {
+        result = await api.getTasks(filters, { signal });
+      }
+      
+      tasks = result.tasks;
+      view.setTasks(tasks, categories);
+      view.setTotal(result.meta.total);
+      view.setListState(tasks.length === 0 ? "empty" : "ready");
+    } catch (error) {
+      if (error.kind === "aborted") return;
+      view.setListState("error", messageForError(error));
+    }
+  }
+
+  async function mutate(action) {
+    view.setMutationPending(true);
+    try {
+      await action();
+      view.notify("Успешно", "success");
+      await fetchList(false);
+    } catch (error) {
+      view.notify(messageForError(error), "error");
+    } finally {
+      view.setMutationPending(false);
+    }
+  }
+
+  return {
+    ready,
+    async start(initialFilters = {}) {
+      filters = { ...initialFilters };
+      view.setFilters(filters);
+      await fetchList(true);
+      readyResolve();
+    },
+    async applyFilters(newFilters) {
+      filters = { ...newFilters };
+      await fetchList(false);
+    },
+    async refresh() {
+      await fetchList(categories.length === 0);
+    },
+    async submit(draft) {
+      const val = validateDraft(draft, categories);
+      if (!val.valid) {
+        view.showFormErrors(val.errors);
+        return;
+      }
+      view.showFormErrors({});
+      await mutate(async () => {
+        if (editingId) await api.updateTask(editingId, val.value);
+        else await api.createTask(val.value);
+        editingId = null;
+        view.setFormTask(null);
+      });
+    },
+    beginEdit(id) {
+      const t = tasks.find((x) => x.id === id);
+      if (t) {
+        editingId = id;
+        view.setFormTask(t);
+      }
+    },
+    cancelEdit() {
+      editingId = null;
+      view.setFormTask(null);
+      view.showFormErrors({});
+    },
+    async toggleTask(id) {
+      const t = tasks.find((x) => x.id === id);
+      if (t) await mutate(() => api.setTaskCompleted(id, !t.completed));
+    },
+    async deleteTask(id) {
+      await mutate(() => api.deleteTask(id));
+    },
+    async resetData() {
+      view.setMutationPending(true);
+      try {
+        await api.resetDemoData();
+        view.notify("Данные восстановлены", "success");
+        await fetchList(false);
+      } catch (e) {
+        view.notify(messageForError(e), "error");
+      } finally {
+        view.setMutationPending(false);
+      }
+    },
+    destroy() {
+      if (abortController) abortController.abort();
+    }
+  };
 }

@@ -1,54 +1,30 @@
-import { ApiError, createApiClient } from "./api-client.js";
+import { createApiClient } from "./api-client.js";
 import { createTaskApi } from "./task-api.js";
-import { variantFilters, variantNumber } from "./variant.js";
+import { createDomView } from "./dom-app.js";
+import { createAppController } from "./app-controller.js";
+import { variantFilters } from "./variant.js";
 
-const baseUrl = process.env.API_URL ?? "http://127.0.0.1:5505/api";
+const urlParams = new URLSearchParams(window.location.search);
+const baseUrl = urlParams.get("api") || "http://127.0.0.1:5505/api";
 
-function describeError(error) {
-  if (!(error instanceof ApiError)) {
-    return `Неожиданная ошибка: ${error.message}`;
-  }
+const client = createApiClient({ baseUrl, timeoutMs: 5000 });
+const api = createTaskApi(client);
+const view = createDomView(document);
+const controller = createAppController({ api, view });
 
-  const parts = [`Тип: ${error.kind}`, error.message];
-  if (error.status !== null) parts.push(`HTTP ${error.status}`);
-  if (error.code !== null) parts.push(`Код API: ${error.code}`);
-  return parts.join(" · ");
-}
+view.setApiUrl(baseUrl);
+view.connect({
+  submit: (draft) => controller.submit(draft),
+  filters: (f) => controller.applyFilters(f),
+  refresh: () => controller.refresh(),
+  cancelEdit: () => controller.cancelEdit(),
+  resetData: () => controller.resetData(),
+  taskAction: (action, id) => {
+    if (action === "edit") controller.beginEdit(id);
+    else if (action === "toggle") controller.toggleTask(id);
+    else if (action === "delete") controller.deleteTask(id);
+  },
+});
 
-try {
-  const client = createApiClient({ baseUrl, timeoutMs: 2000 });
-  const api = createTaskApi(client);
-  const filters = variantNumber === null
-    ? { completed: false, priority: "high" }
-    : variantFilters;
-
-  const startedAt = performance.now();
-  const { tasks, categories, meta } = await api.loadInitialData(filters);
-  const elapsedMs = performance.now() - startedAt;
-  const categoryNames = new Map(categories.map((category) => [category.id, category.name]));
-
-  console.log(
-    variantNumber === null
-      ? "Общий контрольный запрос"
-      : `Индивидуальный вариант ${variantNumber}`,
-  );
-  console.log("Фильтры:", meta.filters);
-  console.log(`Получено задач: ${meta.total}; время: ${elapsedMs.toFixed(1)} мс`);
-  console.table(tasks.map((task) => ({
-    id: task.id,
-    title: task.title,
-    completed: task.completed,
-    priority: task.priority,
-    category: categoryNames.get(task.categoryId) ?? "Неизвестно",
-  })));
-
-  try {
-    await api.getTaskById(999);
-  } catch (error) {
-    console.log("Контрольная ошибка 404:", describeError(error));
-  }
-} catch (error) {
-  console.error(describeError(error));
-  console.error(`Проверяемый адрес API: ${baseUrl}`);
-  process.exitCode = 1;
-}
+controller.start(variantFilters);
+window.practice06 = { ready: controller.ready };
